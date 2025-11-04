@@ -327,6 +327,7 @@ fn process_command(command: &Commands) -> Result<(), anyhow::Error> {
                     threads: *threads,
                     quiet: *quiet,
                     entropy_threshold: *entropy_threshold,
+                    min_frequency: None,
                 };
                 config
                     .execute()

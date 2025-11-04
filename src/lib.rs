@@ -136,8 +136,9 @@ impl MinimizerVec {
 }
 
 /// Frequency counter for minimizers during index building
+#[derive(Clone, Debug)]
 pub struct MinimizerFrequencies {
-    counts: RapidHashMap128,
+    pub counts: RapidHashMap128,
 }
 
 impl MinimizerFrequencies {

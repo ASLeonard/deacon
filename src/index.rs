@@ -1,6 +1,6 @@
 use crate::filter::{Buffers, ProcessingStats};
 use crate::minimizers::KmerHasher;
-use crate::{FixedRapidHasher, IndexConfig, RapidHashSet};
+use crate::{FixedRapidHasher, IndexConfig, MinimizerFrequencies, RapidHashSet};
 use anyhow::{Context, Result};
 use bincode::serde::{decode_from_std_read, encode_into_std_write};
 use paraseq::Record;
@@ -271,11 +271,13 @@ struct BuildIndexProcessor<'c> {
     local_stats: ProcessingStats,
     local_minimizers_u64: Option<RapidHashSet<u64>>,
     local_minimizers_u128: Option<RapidHashSet<u128>>,
+    local_frequencies: Option<MinimizerFrequencies>,
     local_record_info: Vec<(Vec<u8>, usize)>, // (record_id, seq_len) for progress output
     // Global state
     global_stats: Arc<Mutex<ProcessingStats>>,
     global_minimizers_u64: Arc<Mutex<Option<RapidHashSet<u64>>>>,
     global_minimizers_u128: Arc<Mutex<Option<RapidHashSet<u128>>>>,
+    global_frequencies: Arc<Mutex<Option<MinimizerFrequencies>>>,
 }
 
 impl<Rf: Record> ParallelProcessor<Rf> for BuildIndexProcessor<'_> {
@@ -293,19 +295,34 @@ impl<Rf: Record> ParallelProcessor<Rf> for BuildIndexProcessor<'_> {
             &mut self.buffers,
         );
 
-        // Extend appropriate local set based on type
-        match &mut self.buffers.minimizers {
-            crate::MinimizerVec::U64(vec) => {
-                self.local_minimizers_u64
-                    .as_mut()
-                    .unwrap()
-                    .extend(vec.iter());
+        // If frequency tracking is enabled, increment counts; otherwise extend sets
+        if let Some(freq) = &mut self.local_frequencies {
+            // Frequency tracking mode - only support u128 for now
+            match &self.buffers.minimizers {
+                crate::MinimizerVec::U128(vec) => {
+                    for &minimizer in vec.iter() {
+                        freq.increment(minimizer);
+                    }
+                }
+                crate::MinimizerVec::U64(_) => {
+                    panic!("Frequency tracking with u64 minimizers not yet supported");
+                }
             }
-            crate::MinimizerVec::U128(vec) => {
-                self.local_minimizers_u128
-                    .as_mut()
-                    .unwrap()
-                    .extend(vec.iter());
+        } else {
+            // Regular set-based tracking
+            match &mut self.buffers.minimizers {
+                crate::MinimizerVec::U64(vec) => {
+                    self.local_minimizers_u64
+                        .as_mut()
+                        .unwrap()
+                        .extend(vec.iter());
+                }
+                crate::MinimizerVec::U128(vec) => {
+                    self.local_minimizers_u128
+                        .as_mut()
+                        .unwrap()
+                        .extend(vec.iter());
+                }
             }
         }
 
@@ -320,7 +337,16 @@ impl<Rf: Record> ParallelProcessor<Rf> for BuildIndexProcessor<'_> {
 
     fn on_batch_complete(&mut self) -> paraseq::parallel::Result<()> {
         // Merge local minimizers into global set and get new total count
-        let minimizer_count = if let Some(local) = &mut self.local_minimizers_u64 {
+        let minimizer_count = if let Some(local_freq) = &mut self.local_frequencies {
+            // Frequency tracking mode - merge counts into global
+            let mut global = self.global_frequencies.lock();
+            let global_freq = global.as_mut().unwrap();
+            for (&minimizer, &count) in &local_freq.counts {
+                *global_freq.counts.entry(minimizer).or_insert(0) += count;
+            }
+            local_freq.counts.clear();
+            global_freq.len()
+        } else if let Some(local) = &mut self.local_minimizers_u64 {
             let mut global = self.global_minimizers_u64.lock();
             global.as_mut().unwrap().extend(local.iter());
             local.clear();
@@ -393,7 +419,29 @@ pub fn build(config: &IndexConfig) -> Result<()> {
         config.kmer_length, config.window_size
     );
 
-    let mut processor = if config.kmer_length <= 32 {
+    // Determine if we're using frequency tracking
+    let use_frequency_tracking = config.min_frequency.is_some();
+
+    let mut processor = if use_frequency_tracking {
+        // Frequency tracking mode (only u128 supported for now)
+        if config.kmer_length <= 32 {
+            eprintln!("Warning: frequency tracking with k<=32 not yet optimized, using u128");
+        }
+        BuildIndexProcessor {
+            config,
+            hasher: KmerHasher::new(config.kmer_length as usize),
+            local_stats: ProcessingStats::default(),
+            buffers: Buffers::new_u128(),
+            local_minimizers_u64: None,
+            local_minimizers_u128: None,
+            local_frequencies: Some(MinimizerFrequencies::new()),
+            local_record_info: Vec::new(),
+            global_stats: Arc::new(Mutex::new(ProcessingStats::default())),
+            global_minimizers_u64: Arc::new(Mutex::new(None)),
+            global_minimizers_u128: Arc::new(Mutex::new(None)),
+            global_frequencies: Arc::new(Mutex::new(Some(MinimizerFrequencies::new()))),
+        }
+    } else if config.kmer_length <= 32 {
         BuildIndexProcessor {
             config,
             hasher: KmerHasher::new(config.kmer_length as usize),
@@ -401,10 +449,12 @@ pub fn build(config: &IndexConfig) -> Result<()> {
             buffers: Buffers::new_u64(),
             local_minimizers_u64: Some(RapidHashSet::default()),
             local_minimizers_u128: None,
+            local_frequencies: None,
             local_record_info: Vec::new(),
             global_stats: Arc::new(Mutex::new(ProcessingStats::default())),
             global_minimizers_u64: Arc::new(Mutex::new(Some(RapidHashSet::default()))),
             global_minimizers_u128: Arc::new(Mutex::new(None)),
+            global_frequencies: Arc::new(Mutex::new(None)),
         }
     } else {
         BuildIndexProcessor {
@@ -414,37 +464,80 @@ pub fn build(config: &IndexConfig) -> Result<()> {
             buffers: Buffers::new_u128(),
             local_minimizers_u64: None,
             local_minimizers_u128: Some(RapidHashSet::default()),
+            local_frequencies: None,
             local_record_info: Vec::new(),
             global_stats: Arc::new(Mutex::new(ProcessingStats::default())),
             global_minimizers_u64: Arc::new(Mutex::new(None)),
             global_minimizers_u128: Arc::new(Mutex::new(Some(RapidHashSet::default()))),
+            global_frequencies: Arc::new(Mutex::new(None)),
         }
     };
     reader.process_parallel(&mut processor, config.threads)?;
 
-    let all_minimizers = if config.kmer_length <= 32 {
+    let stats = Arc::try_unwrap(processor.global_stats)
+        .unwrap()
+        .into_inner();
+
+    // Extract minimizers, applying frequency filtering if enabled
+    let all_minimizers = if use_frequency_tracking {
+        let frequencies = Arc::try_unwrap(processor.global_frequencies)
+            .unwrap()
+            .into_inner()
+            .unwrap();
+
+        let total_count = frequencies.len();
+        eprintln!(
+            "Counted {} unique minimizers from {} record(s) ({}bp)",
+            total_count, stats.total_seqs, stats.total_bp
+        );
+
+        // Print histogram
+        let histogram = frequencies.histogram();
+        eprintln!("\nMinimizer frequency histogram:");
+        for (freq, count) in &histogram {
+            if *freq == 1024 {
+                eprintln!("  1024+: {}", count);
+            } else {
+                eprintln!("  {}: {}", freq, count);
+            }
+        }
+
+        // Apply frequency threshold
+        let min_freq = config.min_frequency.unwrap();
+        let filtered = frequencies.filter_by_threshold(min_freq);
+        let retained = filtered.len();
+        let percent = (retained as f64 / total_count as f64) * 100.0;
+        eprintln!(
+            "\nRetained {} / {} minimizers ({:.1}%) after frequency filtering (min_frequency >= {})",
+            retained, total_count, percent, min_freq
+        );
+
+        filtered
+    } else if config.kmer_length <= 32 {
         let set = Arc::try_unwrap(processor.global_minimizers_u64)
             .unwrap()
             .into_inner()
             .unwrap();
+        eprintln!(
+            "Indexed {} minimizers from {} record(s) ({}bp)",
+            set.len(),
+            stats.total_seqs,
+            stats.total_bp
+        );
         crate::MinimizerSet::U64(set)
     } else {
         let set = Arc::try_unwrap(processor.global_minimizers_u128)
             .unwrap()
             .into_inner()
             .unwrap();
+        eprintln!(
+            "Indexed {} minimizers from {} record(s) ({}bp)",
+            set.len(),
+            stats.total_seqs,
+            stats.total_bp
+        );
         crate::MinimizerSet::U128(set)
     };
-    let stats = Arc::try_unwrap(processor.global_stats)
-        .unwrap()
-        .into_inner();
-
-    eprintln!(
-        "Indexed {} minimizers from {} record(s) ({}bp)",
-        all_minimizers.len(),
-        stats.total_seqs,
-        stats.total_bp
-    );
 
     let header = IndexHeader::new(config.kmer_length, config.window_size);
 
@@ -574,6 +667,7 @@ fn stream_diff_fastx(
         threads: 0,
         quiet: false,
         entropy_threshold: 0.0,
+        min_frequency: None,
     };
     temp_config.validate()?;
 
