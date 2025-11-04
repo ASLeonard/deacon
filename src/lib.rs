@@ -44,6 +44,17 @@ pub type RapidHashSet<T> = HashSet<T, FixedRapidHasher>;
 /// RapidHashMap using rapidhash with fixed seed for fast init
 pub type RapidHashMap128 = HashMap<u128, u32, FixedRapidHasher>;
 
+/// Read assignment for dual-index competitive binning
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadAssignment {
+    /// Ambiguous assignment (haplotype 0) - no hits or ratio too close
+    Ambiguous,
+    /// Assigned to index1 (haplotype 1)
+    Index1,
+    /// Assigned to index2 (haplotype 2)
+    Index2,
+}
+
 /// Zero-cost (hopefully?) abstraction over u64 and u128 minimizer sets
 pub enum MinimizerSet {
     U64(RapidHashSet<u64>),
