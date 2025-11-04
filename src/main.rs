@@ -137,6 +137,10 @@ enum IndexCommands {
         /// Minimum scaled entropy threshold for k-mer filtering (0.0-1.0)
         #[arg(short = 'e', long = "entropy-threshold", default_value = "0.0")]
         entropy_threshold: f32,
+
+        /// Minimum frequency threshold for minimizer filtering (only retain minimizers occurring at least N times)
+        #[arg(short = 'm', long = "min-frequency")]
+        min_frequency: Option<u32>,
     },
     /// Combine multiple minimizer indexes (A ∪ B…)
     Union {
@@ -318,6 +322,7 @@ fn process_command(command: &Commands) -> Result<(), anyhow::Error> {
                 threads,
                 quiet,
                 entropy_threshold,
+                min_frequency,
             } => {
                 let config = IndexConfig {
                     input_path: input.clone(),
@@ -327,7 +332,7 @@ fn process_command(command: &Commands) -> Result<(), anyhow::Error> {
                     threads: *threads,
                     quiet: *quiet,
                     entropy_threshold: *entropy_threshold,
-                    min_frequency: None,
+                    min_frequency: *min_frequency,
                 };
                 config
                     .execute()
