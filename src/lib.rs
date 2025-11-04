@@ -21,7 +21,7 @@ pub use index::{
 pub use minimizers::{DEFAULT_KMER_LENGTH, DEFAULT_WINDOW_SIZE, decode_u64, decode_u128};
 
 use anyhow::Result;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasher;
 use std::path::{Path, PathBuf};
 
@@ -39,6 +39,9 @@ impl BuildHasher for FixedRapidHasher {
 
 /// RapidHashSet using rapidhash with fixed seed for fast init
 pub type RapidHashSet<T> = HashSet<T, FixedRapidHasher>;
+
+/// RapidHashMap using rapidhash with fixed seed for fast init
+pub type RapidHashMap128 = HashMap<u128, u32, FixedRapidHasher>;
 
 /// Zero-cost (hopefully?) abstraction over u64 and u128 minimizer sets
 pub enum MinimizerSet {
@@ -129,6 +132,76 @@ impl MinimizerVec {
             MinimizerVec::U64(v) => v.is_empty(),
             MinimizerVec::U128(v) => v.is_empty(),
         }
+    }
+}
+
+/// Frequency counter for minimizers during index building
+pub struct MinimizerFrequencies {
+    counts: RapidHashMap128,
+}
+
+impl MinimizerFrequencies {
+    /// Create a new empty frequency counter
+    pub fn new() -> Self {
+        Self {
+            counts: RapidHashMap128::default(),
+        }
+    }
+
+    /// Increment the count for a minimizer
+    pub fn increment(&mut self, minimizer: u128) {
+        *self.counts.entry(minimizer).or_insert(0) += 1;
+    }
+
+    /// Filter minimizers by minimum frequency threshold and return a MinimizerSet
+    pub fn filter_by_threshold(&self, min_freq: u32) -> MinimizerSet {
+        let filtered: RapidHashSet<u128> = self
+            .counts
+            .iter()
+            .filter_map(|(&minimizer, &count)| {
+                if count >= min_freq {
+                    Some(minimizer)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        MinimizerSet::U128(filtered)
+    }
+
+    /// Get the number of unique minimizers
+    pub fn len(&self) -> usize {
+        self.counts.len()
+    }
+
+    /// Check if empty
+    pub fn is_empty(&self) -> bool {
+        self.counts.is_empty()
+    }
+
+    /// Generate a histogram of minimizer frequencies
+    /// Returns a vector of (frequency, count) pairs where count is the number of minimizers
+    /// with that frequency. Frequencies 1-1023 are returned individually, and all frequencies
+    /// >=1024 are combined into a single "1024+" bin.
+    pub fn histogram(&self) -> Vec<(u32, usize)> {
+        let mut freq_counts: HashMap<u32, usize> = HashMap::new();
+
+        for &count in self.counts.values() {
+            // Combine all frequencies >= 1024 into the 1024 bin
+            let key = if count >= 1024 { 1024 } else { count };
+            *freq_counts.entry(key).or_insert(0) += 1;
+        }
+
+        // Convert to sorted vector
+        let mut histogram: Vec<(u32, usize)> = freq_counts.into_iter().collect();
+        histogram.sort_by_key(|&(freq, _)| freq);
+        histogram
+    }
+}
+
+impl Default for MinimizerFrequencies {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -297,6 +370,9 @@ pub struct IndexConfig {
 
     /// Minimum scaled entropy threshold for k-mer filtering (0.0-1.0)
     pub entropy_threshold: f32,
+
+    /// Minimum frequency threshold for minimizer filtering (None = no filtering)
+    pub min_frequency: Option<u32>,
 }
 
 impl IndexConfig {
@@ -310,6 +386,7 @@ impl IndexConfig {
             threads: 8,
             quiet: false,
             entropy_threshold: 0.0,
+            min_frequency: None,
         }
     }
 
@@ -364,6 +441,12 @@ impl IndexConfig {
     /// Set threshold for scaled entropy filtering at indexing time
     pub fn with_entropy_threshold(mut self, threshold: f32) -> Self {
         self.entropy_threshold = threshold;
+        self
+    }
+
+    /// Set minimum frequency threshold for minimizer filtering
+    pub fn with_min_frequency(mut self, min_frequency: u32) -> Self {
+        self.min_frequency = Some(min_frequency);
         self
     }
 
