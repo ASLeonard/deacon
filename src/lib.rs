@@ -354,6 +354,9 @@ pub struct IndexConfig {
     /// Path to input fastx file
     pub input_path: PathBuf,
 
+    /// Path to optional second paired fastx file (None = single-end)
+    pub input2_path: Option<PathBuf>,
+
     /// K-mer length used for indexing
     pub kmer_length: u8,
 
@@ -381,6 +384,7 @@ impl IndexConfig {
     pub fn new(input_path: PathBuf) -> Self {
         Self {
             input_path: input_path,
+            input2_path: None,
             kmer_length: DEFAULT_KMER_LENGTH,
             window_size: DEFAULT_WINDOW_SIZE,
             output_path: None,
@@ -448,6 +452,12 @@ impl IndexConfig {
     /// Set minimum frequency threshold for minimizer filtering
     pub fn with_min_frequency(mut self, min_frequency: u32) -> Self {
         self.min_frequency = Some(min_frequency);
+        self
+    }
+
+    /// Set second input path for paired-end reads
+    pub fn with_input2(mut self, input2_path: PathBuf) -> Self {
+        self.input2_path = Some(input2_path);
         self
     }
 

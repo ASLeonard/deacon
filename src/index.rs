@@ -4,7 +4,7 @@ use crate::{FixedRapidHasher, IndexConfig, MinimizerFrequencies, RapidHashSet};
 use anyhow::{Context, Result};
 use bincode::serde::{decode_from_std_read, encode_into_std_write};
 use paraseq::Record;
-use paraseq::prelude::{ParallelProcessor, ParallelReader};
+use paraseq::prelude::{PairedParallelProcessor, ParallelProcessor, ParallelReader};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
@@ -385,10 +385,122 @@ impl<Rf: Record> ParallelProcessor<Rf> for BuildIndexProcessor<'_> {
     }
 }
 
+impl<Rf: Record> PairedParallelProcessor<Rf> for BuildIndexProcessor<'_> {
+    fn process_record_pair(&mut self, record1: Rf, record2: Rf) -> paraseq::parallel::Result<()> {
+        // Process first mate
+        let seq1 = record1.seq();
+        self.local_stats.total_seqs += 1;
+        self.local_stats.total_bp += seq1.len() as u64;
+
+        crate::minimizers::fill_minimizers(
+            &seq1,
+            &self.hasher,
+            self.config.kmer_length,
+            self.config.window_size,
+            self.config.entropy_threshold,
+            &mut self.buffers,
+        );
+
+        // Handle first mate minimizers
+        if let Some(freq) = &mut self.local_frequencies {
+            match &self.buffers.minimizers {
+                crate::MinimizerVec::U128(vec) => {
+                    for &minimizer in vec.iter() {
+                        freq.increment(minimizer);
+                    }
+                }
+                crate::MinimizerVec::U64(_) => {
+                    panic!("Frequency tracking with u64 minimizers not yet supported");
+                }
+            }
+        } else {
+            match &mut self.buffers.minimizers {
+                crate::MinimizerVec::U64(vec) => {
+                    self.local_minimizers_u64
+                        .as_mut()
+                        .unwrap()
+                        .extend(vec.iter());
+                }
+                crate::MinimizerVec::U128(vec) => {
+                    self.local_minimizers_u128
+                        .as_mut()
+                        .unwrap()
+                        .extend(vec.iter());
+                }
+            }
+        }
+
+        // Process second mate
+        let seq2 = record2.seq();
+        self.local_stats.total_seqs += 1;
+        self.local_stats.total_bp += seq2.len() as u64;
+
+        crate::minimizers::fill_minimizers(
+            &seq2,
+            &self.hasher,
+            self.config.kmer_length,
+            self.config.window_size,
+            self.config.entropy_threshold,
+            &mut self.buffers,
+        );
+
+        // Handle second mate minimizers
+        if let Some(freq) = &mut self.local_frequencies {
+            match &self.buffers.minimizers {
+                crate::MinimizerVec::U128(vec) => {
+                    for &minimizer in vec.iter() {
+                        freq.increment(minimizer);
+                    }
+                }
+                crate::MinimizerVec::U64(_) => {
+                    panic!("Frequency tracking with u64 minimizers not yet supported");
+                }
+            }
+        } else {
+            match &mut self.buffers.minimizers {
+                crate::MinimizerVec::U64(vec) => {
+                    self.local_minimizers_u64
+                        .as_mut()
+                        .unwrap()
+                        .extend(vec.iter());
+                }
+                crate::MinimizerVec::U128(vec) => {
+                    self.local_minimizers_u128
+                        .as_mut()
+                        .unwrap()
+                        .extend(vec.iter());
+                }
+            }
+        }
+
+        // Store record info for progress output (store both mates)
+        if !self.config.quiet {
+            self.local_record_info.push((
+                format!("{}/1", std::str::from_utf8(record1.id()).unwrap_or("unknown"))
+                    .into_bytes(),
+                seq1.len(),
+            ));
+            self.local_record_info.push((
+                format!("{}/2", std::str::from_utf8(record2.id()).unwrap_or("unknown"))
+                    .into_bytes(),
+                seq2.len(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn on_batch_complete(&mut self) -> paraseq::parallel::Result<()> {
+        // Reuse the same on_batch_complete from ParallelProcessor
+        <Self as ParallelProcessor<Rf>>::on_batch_complete(self)
+    }
+}
+
 /// Build an index of minimizers from a fastx file
 pub fn build(config: &IndexConfig) -> Result<()> {
     let start_time = Instant::now();
     let path = &config.input_path;
+    let is_paired = config.input2_path.is_some();
 
     let version: String = env!("CARGO_PKG_VERSION").to_string();
 
@@ -398,21 +510,16 @@ pub fn build(config: &IndexConfig) -> Result<()> {
         options.push(format!("threads={}", config.threads));
     }
 
+    let input_mode = if is_paired { "paired" } else { "single" };
     eprintln!(
-        "Deacon v{}; mode: build; input: single; options: {}",
+        "Deacon v{}; mode: build; input: {}; options: {}",
         version,
+        input_mode,
         options.join(", ")
     );
 
     // Validate k-mer and window size constraints
     config.validate()?;
-
-    let in_path = if path.as_os_str() == "-" {
-        None
-    } else {
-        Some(path.as_path())
-    };
-    let reader = reader_with_inferred_batch_size(in_path)?;
 
     eprintln!(
         "Building index (k={}, w={})",
@@ -472,7 +579,29 @@ pub fn build(config: &IndexConfig) -> Result<()> {
             global_frequencies: Arc::new(Mutex::new(None)),
         }
     };
-    reader.process_parallel(&mut processor, config.threads)?;
+
+    // Process sequences (paired or single-end)
+    if is_paired {
+        let in_path = if path.as_os_str() == "-" {
+            return Err(anyhow::anyhow!(
+                "Paired-end mode does not support stdin; provide explicit file paths"
+            ));
+        } else {
+            path.as_path()
+        };
+        let in2_path = config.input2_path.as_ref().unwrap().as_path();
+        let reader1 = reader_with_inferred_batch_size(Some(in_path))?;
+        let reader2 = reader_with_inferred_batch_size(Some(in2_path))?;
+        reader1.process_parallel_paired(reader2, &mut processor, config.threads)?;
+    } else {
+        let in_path = if path.as_os_str() == "-" {
+            None
+        } else {
+            Some(path.as_path())
+        };
+        let reader = reader_with_inferred_batch_size(in_path)?;
+        reader.process_parallel(&mut processor, config.threads)?;
+    }
 
     let stats = Arc::try_unwrap(processor.global_stats)
         .unwrap()
@@ -661,6 +790,7 @@ fn stream_diff_fastx(
     // Validate k-mer and window size constraints
     let temp_config = crate::IndexConfig {
         input_path: PathBuf::new(),
+        input2_path: None,
         kmer_length,
         window_size,
         output_path: None,

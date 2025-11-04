@@ -114,6 +114,10 @@ enum IndexCommands {
         /// Path to input fastx file (supports gz, zst and xz compression)
         input: PathBuf,
 
+        /// Path to optional second paired fastx file (for paired-end reads)
+        #[arg(long = "input2")]
+        input2: Option<PathBuf>,
+
         /// K-mer length used for indexing (k+w-1 must be <= 96 and odd)
         #[arg(short = 'k', default_value_t = DEFAULT_KMER_LENGTH)]
         kmer_length: u8,
@@ -316,6 +320,7 @@ fn process_command(command: &Commands) -> Result<(), anyhow::Error> {
         Commands::Index { command } => match command {
             IndexCommands::Build {
                 input,
+                input2,
                 kmer_length,
                 window_size,
                 output,
@@ -326,6 +331,7 @@ fn process_command(command: &Commands) -> Result<(), anyhow::Error> {
             } => {
                 let config = IndexConfig {
                     input_path: input.clone(),
+                    input2_path: input2.clone(),
                     kmer_length: *kmer_length,
                     window_size: *window_size,
                     output_path: output.clone(),
