@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use deacon::{
     DEFAULT_KMER_LENGTH, DEFAULT_WINDOW_SIZE, FilterConfig, IndexConfig, diff_index, dump_index,
-    index_info, intersect_index, union_index,
+    index_info, intersect_index, subtract_index, union_index,
 };
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
@@ -166,7 +166,21 @@ enum IndexCommands {
         #[arg(short = 'o', long = "output")]
         output: Option<PathBuf>,
     },
-    /// Subtract minimizers in one index from another (A - B)
+    /// Subtract minimizers in index B from index A (A - B), creating exclusive minimizers
+    Subtract {
+        /// Path to first index file (A)
+        #[arg(required = true)]
+        index_a: PathBuf,
+
+        /// Path to second index file to subtract (B)
+        #[arg(required = true)]
+        index_b: PathBuf,
+
+        /// Path to output file
+        #[arg(short = 'o', long = "output", required = true)]
+        output: PathBuf,
+    },
+    /// Subtract minimizers from FASTX or index (legacy, use Subtract for index-index operations)
     Diff {
         /// Path to first index file
         #[arg(required = true)]
@@ -354,6 +368,14 @@ fn process_command(command: &Commands) -> Result<(), anyhow::Error> {
             IndexCommands::Intersect { inputs, output } => {
                 intersect_index(inputs, output.as_deref())
                     .context("Failed to run index intersect command")?;
+            }
+            IndexCommands::Subtract {
+                index_a,
+                index_b,
+                output,
+            } => {
+                subtract_index(index_a, index_b, output)
+                    .context("Failed to run index subtract command")?;
             }
             IndexCommands::Diff {
                 first,

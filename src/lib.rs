@@ -16,7 +16,8 @@ pub mod minimizers;
 pub use filter::{FilterSummary, run as run_filter};
 pub use index::{
     IndexHeader, build as build_index, diff as diff_index, dump as dump_index, dump_minimizers,
-    info as index_info, intersect as intersect_index, load_minimizers, union as union_index,
+    info as index_info, intersect as intersect_index, load_minimizers, subtract as subtract_index,
+    union as union_index,
 };
 pub use minimizers::{DEFAULT_KMER_LENGTH, DEFAULT_WINDOW_SIZE, decode_u64, decode_u128};
 

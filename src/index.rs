@@ -1181,6 +1181,66 @@ pub fn intersect(inputs: &[PathBuf], output: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
+/// Subtract one index from another (A - B), removing minimizers in B from A
+pub fn subtract(
+    index_a_path: &Path,
+    index_b_path: &Path,
+    output_path: &Path,
+) -> Result<()> {
+    let start_time = Instant::now();
+
+    // Load headers to validate k/w match
+    let (header_a, count_a) = load_header_and_count(&index_a_path)?;
+    let (header_b, count_b) = load_header_and_count(&index_b_path)?;
+
+    eprintln!(
+        "Subtracting indexes (k={}, w={})",
+        header_a.kmer_length(),
+        header_a.window_size()
+    );
+
+    // Validate k/w match
+    if header_a.kmer_length() != header_b.kmer_length()
+        || header_a.window_size() != header_b.window_size()
+    {
+        return Err(anyhow::anyhow!(
+            "Index parameters must match: index_a (k={}, w={}) vs index_b (k={}, w={})",
+            header_a.kmer_length(),
+            header_a.window_size(),
+            header_b.kmer_length(),
+            header_b.window_size()
+        ));
+    }
+
+    // Load both indexes
+    let (mut minimizers_a, _) = load_minimizers(index_a_path)?;
+    let (minimizers_b, _) = load_minimizers(index_b_path)?;
+
+    eprintln!("Index A: {} minimizers", count_a);
+    eprintln!("Index B: {} minimizers", count_b);
+
+    let initial_count = minimizers_a.len();
+
+    // Compute set difference A - B
+    minimizers_a.remove_all(&minimizers_b);
+
+    let final_count = minimizers_a.len();
+    let percent_retained = (final_count as f64 / initial_count as f64) * 100.0;
+
+    eprintln!(
+        "A - B: {} minimizers ({:.1}% retained)",
+        final_count, percent_retained
+    );
+
+    // Write output
+    dump_minimizers(&minimizers_a, &header_a, Some(output_path))?;
+
+    let total_time = start_time.elapsed();
+    eprintln!("Completed subtraction in {:.2?}", total_time);
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
