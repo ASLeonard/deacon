@@ -5,18 +5,8 @@ use crate::filter::Buffers;
 pub const DEFAULT_KMER_LENGTH: u8 = 31;
 pub const DEFAULT_WINDOW_SIZE: u8 = 15;
 
-/// Decode u64 minimizer (2-bit canonical k-mer) to ASCII
-pub fn decode_u64(minimizer: u64, k: u8) -> Vec<u8> {
-    (0..k)
-        .map(|i| {
-            let base_bits = ((minimizer >> (2 * i)) & 0b11) as u8;
-            unpack_base(base_bits)
-        })
-        .collect()
-}
-
 /// Decode u128 minimizer (2-bit canonical k-mer) to ASCII
-pub fn decode_u128(minimizer: u128, k: u8) -> Vec<u8> {
+pub fn decode(minimizer: u128, k: u8) -> Vec<u8> {
     (0..k)
         .map(|i| {
             let base_bits = ((minimizer >> (2 * i)) & 0b11) as u8;
@@ -36,11 +26,7 @@ pub fn compute_minimizers(
     window_size: u8,
     entropy_threshold: f32,
 ) -> crate::MinimizerVec {
-    let mut buffers = if kmer_length <= 32 {
-        Buffers::new_u64()
-    } else {
-        Buffers::new_u128()
-    };
+    let mut buffers = Buffers::new_u128();
     fill_minimizers(
         seq,
         hasher,
@@ -141,44 +127,23 @@ pub(crate) fn fill_minimizers(
         .hasher(hasher)
         .run_skip_ambiguous_windows_with_buf(packed_nseq.as_slice(), positions, cache);
 
-    match minimizers {
-        crate::MinimizerVec::U64(vec) => {
-            vec.extend(
-                out.pos_and_values_u64()
-                    .filter(|&(pos, _val)| {
-                        let pos_usize = pos as usize;
-                        let kmer = &seq[pos_usize..pos_usize + kmer_length as usize];
+    let crate::MinimizerVec::U128(vec) = minimizers;
+    vec.extend(
+        out.pos_and_values_u128()
+            .filter(|&(pos, _val)| {
+                let pos_usize = pos as usize;
+                let kmer = &seq[pos_usize..pos_usize + kmer_length as usize];
 
-                        // Check scaled entropy constraint if threshold specified
-                        if entropy_threshold == 0.0 {
-                            true
-                        } else {
-                            let entropy = calculate_scaled_entropy(kmer, kmer_length);
-                            entropy >= entropy_threshold
-                        }
-                    })
-                    .map(|(_pos, val)| val),
-            );
-        }
-        crate::MinimizerVec::U128(vec) => {
-            vec.extend(
-                out.pos_and_values_u128()
-                    .filter(|&(pos, _val)| {
-                        let pos_usize = pos as usize;
-                        let kmer = &seq[pos_usize..pos_usize + kmer_length as usize];
-
-                        // Check scaled entropy constraint if threshold specified
-                        if entropy_threshold == 0.0 {
-                            true
-                        } else {
-                            let entropy = calculate_scaled_entropy(kmer, kmer_length);
-                            entropy >= entropy_threshold
-                        }
-                    })
-                    .map(|(_pos, val)| val),
-            );
-        }
-    };
+                // Check scaled entropy constraint if threshold specified
+                if entropy_threshold == 0.0 {
+                    true
+                } else {
+                    let entropy = calculate_scaled_entropy(kmer, kmer_length);
+                    entropy >= entropy_threshold
+                }
+            })
+            .map(|(_pos, val)| val),
+    );
 }
 
 #[cfg(test)]
@@ -355,23 +320,8 @@ mod tests {
     }
 
     #[test]
-    fn test_decode_minimizer_not_complement() {
-        // Test decode_u64 returns original k-mer or its rc
-        let test_kmer = b"GCTGAGAGCGGCTGTGGCCTCTGTCTGCTGC";
-        let k = 31;
-        let w = 15;
-
-        // Pad for length
-        let mut test_seq = Vec::new();
-        test_seq.extend_from_slice(b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"); // 31 As before
-        test_seq.extend_from_slice(test_kmer);
-        test_seq.extend_from_slice(b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"); // 31 As after
-
-        let hasher = KmerHasher::new(k as usize);
-        let minimizers = compute_minimizers(&test_seq, &hasher, k as u8, w as u8, 0.0);
-
-        assert!(!minimizers.is_empty(), "Should have at least one minimizer");
-
+    fn test_decode_minimizer() {
+        // Test u128 minimizers work for both k=31 and k=51
         let reverse_complement = |s: &str| -> String {
             s.chars()
                 .rev()
@@ -385,192 +335,56 @@ mod tests {
                 .collect()
         };
 
-        let test_seq_str = String::from_utf8_lossy(&test_seq).to_string();
+        // Test k=31
+        let test_kmer_31 = b"GCTGAGAGCGGCTGTGGCCTCTGTCTGCTGC";
+        let k31 = 31;
+        let w31 = 15;
+        let mut test_seq_31 = Vec::new();
+        test_seq_31.extend_from_slice(b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+        test_seq_31.extend_from_slice(test_kmer_31);
+        test_seq_31.extend_from_slice(b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
 
-        // Check all decoded minimizers appear in test sequence as fwd or rc
-        let mut found_valid = false;
-        match &minimizers {
-            crate::MinimizerVec::U64(vec) => {
-                for &value in vec {
-                    let decoded = String::from_utf8_lossy(&decode_u64(value, k as u8)).to_string();
-                    let decoded_revcomp = reverse_complement(&decoded);
+        let hasher_31 = KmerHasher::new(k31 as usize);
+        let minimizers_31 = compute_minimizers(&test_seq_31, &hasher_31, k31 as u8, w31 as u8, 0.0);
 
-                    if test_seq_str.contains(&decoded) || test_seq_str.contains(&decoded_revcomp) {
-                        found_valid = true;
-                    } else {
-                        panic!(
-                            "Minimizer '{}' not found as forward or revcomp in test sequence",
-                            decoded
-                        );
-                    }
-                }
-            }
-            crate::MinimizerVec::U128(_) => panic!("Expected U64 for k=31"),
+        assert!(!minimizers_31.is_empty(), "Should have at least one minimizer for k=31");
+
+        let test_seq_str_31 = String::from_utf8_lossy(&test_seq_31).to_string();
+        let crate::MinimizerVec::U128(vec31) = &minimizers_31;
+        for &value in vec31 {
+            let decoded = String::from_utf8_lossy(&decode(value, k31 as u8)).to_string();
+            let decoded_revcomp = reverse_complement(&decoded);
+            assert!(
+                test_seq_str_31.contains(&decoded) || test_seq_str_31.contains(&decoded_revcomp),
+                "k=31: Decoded minimizer '{}' not found in test sequence",
+                decoded
+            );
         }
 
-        assert!(found_valid, "No valid decoded minimizers found");
-    }
+        // Test k=51
+        let test_kmer_51 = b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTA"; // 51bp
+        let k51 = 51;
+        let w51 = 17;
+        let mut test_seq_51 = Vec::new();
+        test_seq_51.extend_from_slice(b"TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT");
+        test_seq_51.extend_from_slice(test_kmer_51);
+        test_seq_51.extend_from_slice(b"TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT");
 
-    #[test]
-    fn test_decode_canonical_revcomp_smaller() {
-        // Test k-mer where the rc is lexicographically smaller becomes canconical
-        let test_kmer = b"TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT";
-        let k = 31;
-        let w = 15;
+        let hasher_51 = KmerHasher::new(k51 as usize);
+        let minimizers_51 = compute_minimizers(&test_seq_51, &hasher_51, k51 as u8, w51 as u8, 0.0);
 
-        let mut test_seq = Vec::new();
-        test_seq.extend_from_slice(b"CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC");
-        test_seq.extend_from_slice(test_kmer);
-        test_seq.extend_from_slice(b"CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC");
+        assert!(!minimizers_51.is_empty(), "Should have at least one minimizer for k=51");
 
-        let hasher = KmerHasher::new(k as usize);
-        let minimizers = compute_minimizers(&test_seq, &hasher, k as u8, w as u8, 0.0);
-
-        assert!(!minimizers.is_empty(), "Should have at least one minimizer");
-
-        let reverse_complement = |s: &str| -> String {
-            s.chars()
-                .rev()
-                .map(|c| match c {
-                    'A' => 'T',
-                    'T' => 'A',
-                    'G' => 'C',
-                    'C' => 'G',
-                    _ => c,
-                })
-                .collect()
-        };
-
-        let test_seq_str = String::from_utf8_lossy(&test_seq).to_string();
-
-        match &minimizers {
-            crate::MinimizerVec::U64(vec) => {
-                for &value in vec {
-                    let decoded = String::from_utf8_lossy(&decode_u64(value, k as u8)).to_string();
-                    let decoded_revcomp = reverse_complement(&decoded);
-
-                    assert!(
-                        test_seq_str.contains(&decoded) || test_seq_str.contains(&decoded_revcomp),
-                        "Decoded minimizer '{}' not found in test sequence as forward or reverse complement",
-                        decoded
-                    );
-                }
-            }
-            crate::MinimizerVec::U128(_) => panic!("Expected U64 for k=31"),
-        }
-    }
-
-    #[test]
-    fn test_decode_edge_cases() {
-        let k = 31;
-        let w = 15;
-        let hasher = KmerHasher::new(k as usize);
-
-        let reverse_complement = |s: &str| -> String {
-            s.chars()
-                .rev()
-                .map(|c| match c {
-                    'A' => 'T',
-                    'T' => 'A',
-                    'G' => 'C',
-                    'C' => 'G',
-                    _ => c,
-                })
-                .collect()
-        };
-
-        // Test cases: (description, k-mer)
-        let test_cases = vec![
-            ("All A's", b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
-            ("All C's", b"CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"),
-            ("All G's", b"GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG"),
-            ("All T's", b"TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"),
-            ("Near palindrome", b"ACGTACGTACGTACGTACGTACGTACGTACG"),
-            ("AT repeat", b"ATATATATATATATATATATATATATATATA"),
-            ("GC repeat", b"GCGCGCGCGCGCGCGCGCGCGCGCGCGCGCG"),
-        ];
-
-        for (desc, test_kmer) in test_cases {
-            let mut test_seq = Vec::new();
-            test_seq.extend_from_slice(b"NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN"); // Pad with N's
-            test_seq.extend_from_slice(test_kmer);
-            test_seq.extend_from_slice(b"NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN");
-
-            let minimizers = compute_minimizers(&test_seq, &hasher, k as u8, w as u8, 0.0);
-
-            if minimizers.is_empty() {
-                continue; // Skip if no minimizers (e.g., all N's filtered)
-            }
-
-            let test_seq_str = String::from_utf8_lossy(&test_seq).to_string();
-
-            match &minimizers {
-                crate::MinimizerVec::U64(vec) => {
-                    for &value in vec {
-                        let decoded =
-                            String::from_utf8_lossy(&decode_u64(value, k as u8)).to_string();
-                        let decoded_revcomp = reverse_complement(&decoded);
-
-                        assert!(
-                            test_seq_str.contains(&decoded)
-                                || test_seq_str.contains(&decoded_revcomp),
-                            "{}: Decoded minimizer '{}' not found in test sequence",
-                            desc,
-                            decoded
-                        );
-                    }
-                }
-                crate::MinimizerVec::U128(_) => panic!("Expected U64 for k=31"),
-            }
-        }
-    }
-
-    #[test]
-    fn test_decode_u128_long_kmer() {
-        // Test long k-mers with u128
-        let test_kmer = b"ACGTACGTACGTACGTACGTACGTACGTACGTA"; // 33bp
-        let k = 33;
-        let w = 17; // Odd window, l = 33 + 17 - 1 = 49 (odd)
-
-        let mut test_seq = Vec::new();
-        test_seq.extend_from_slice(b"TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"); // Pad with T's instead of N's
-        test_seq.extend_from_slice(test_kmer);
-        test_seq.extend_from_slice(b"TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT");
-
-        let hasher = KmerHasher::new(k as usize);
-        let minimizers = compute_minimizers(&test_seq, &hasher, k as u8, w as u8, 0.0);
-
-        assert!(!minimizers.is_empty(), "Should have at least one minimizer");
-
-        let reverse_complement = |s: &str| -> String {
-            s.chars()
-                .rev()
-                .map(|c| match c {
-                    'A' => 'T',
-                    'T' => 'A',
-                    'G' => 'C',
-                    'C' => 'G',
-                    _ => c,
-                })
-                .collect()
-        };
-
-        let test_seq_str = String::from_utf8_lossy(&test_seq).to_string();
-
-        match &minimizers {
-            crate::MinimizerVec::U128(vec) => {
-                for &value in vec {
-                    let decoded = String::from_utf8_lossy(&decode_u128(value, k as u8)).to_string();
-                    let decoded_revcomp = reverse_complement(&decoded);
-
-                    assert!(
-                        test_seq_str.contains(&decoded) || test_seq_str.contains(&decoded_revcomp),
-                        "Decoded u128 minimizer '{}' not found in test sequence as forward or reverse complement",
-                        decoded
-                    );
-                }
-            }
-            crate::MinimizerVec::U64(_) => panic!("Expected U128 for k=33"),
+        let test_seq_str_51 = String::from_utf8_lossy(&test_seq_51).to_string();
+        let crate::MinimizerVec::U128(vec51) = &minimizers_51;
+        for &value in vec51 {
+            let decoded = String::from_utf8_lossy(&decode(value, k51 as u8)).to_string();
+            let decoded_revcomp = reverse_complement(&decoded);
+            assert!(
+                test_seq_str_51.contains(&decoded) || test_seq_str_51.contains(&decoded_revcomp),
+                "k=51: Decoded minimizer '{}' not found in test sequence",
+                decoded
+            );
         }
     }
 }

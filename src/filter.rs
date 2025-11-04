@@ -1,5 +1,5 @@
 use crate::index::load_minimizers_cached;
-use crate::minimizers::{KmerHasher, decode_u64, decode_u128};
+use crate::minimizers::{KmerHasher, decode};
 use crate::{FilterConfig, MinimizerSet};
 use anyhow::{Context, Result};
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
@@ -270,18 +270,6 @@ pub(crate) struct Buffers {
 }
 
 impl Buffers {
-    pub fn new_u64() -> Self {
-        Self {
-            packed_nseq: PackedNSeqVec {
-                seq: Default::default(),
-                ambiguous: Default::default(),
-            },
-            positions: Default::default(),
-            minimizers: crate::MinimizerVec::U64(Vec::new()),
-            cache: Default::default(),
-        }
-    }
-
     pub fn new_u128() -> Self {
         Self {
             packed_nseq: PackedNSeqVec {
@@ -362,36 +350,20 @@ impl FilterProcessor {
         let minimizers = &self.buffers.minimizers;
         let num_minimizers = minimizers.len();
 
-        // Count distinct minimizer hits based on variant
-        let (hit_count, hit_kmers) = match (minimizers, self.minimizers) {
-            (crate::MinimizerVec::U64(vec), MinimizerSet::U64(set)) => {
-                let mut seen_hits = crate::RapidHashSet::default();
-                let mut hit_kmers = Vec::new();
-                for &minimizer in vec {
-                    if set.contains(&minimizer) && seen_hits.insert(minimizer) {
-                        if self.debug {
-                            let kmer = decode_u64(minimizer, self.kmer_length);
-                            hit_kmers.push(String::from_utf8_lossy(&kmer).to_string());
-                        }
-                    }
+        // Count distinct minimizer hits
+        let crate::MinimizerVec::U128(vec) = minimizers;
+        let MinimizerSet::U128(set) = self.minimizers;
+        let mut seen_hits = crate::RapidHashSet::default();
+        let mut hit_kmers = Vec::new();
+        for &minimizer in vec {
+            if set.contains(&minimizer) && seen_hits.insert(minimizer) {
+                if self.debug {
+                    let kmer = decode(minimizer, self.kmer_length);
+                    hit_kmers.push(String::from_utf8_lossy(&kmer).to_string());
                 }
-                (seen_hits.len(), hit_kmers)
             }
-            (crate::MinimizerVec::U128(vec), MinimizerSet::U128(set)) => {
-                let mut seen_hits = crate::RapidHashSet::default();
-                let mut hit_kmers = Vec::new();
-                for &minimizer in vec {
-                    if set.contains(&minimizer) && seen_hits.insert(minimizer) {
-                        if self.debug {
-                            let kmer = decode_u128(minimizer, self.kmer_length);
-                            hit_kmers.push(String::from_utf8_lossy(&kmer).to_string());
-                        }
-                    }
-                }
-                (seen_hits.len(), hit_kmers)
-            }
-            _ => panic!("Mismatch between MinimizerVec and MinimizerSet types"),
-        };
+        }
+        let hit_count = seen_hits.len();
 
         (
             self.meets_filtering_criteria(hit_count, num_minimizers),
@@ -434,65 +406,34 @@ impl FilterProcessor {
             .hasher(&self.hasher)
             .run_skip_ambiguous_windows_with_buf(packed_nseq.as_slice(), positions, cache);
 
-        // Store k-mer values directly based on variant
-        match minimizers {
-            crate::MinimizerVec::U64(vec) => {
-                vec.extend(m.pos_and_values_u64().map(|(_pos, val)| val));
-            }
-            crate::MinimizerVec::U128(vec) => {
-                vec.extend(m.pos_and_values_u128().map(|(_pos, val)| val));
-            }
-        }
+        // Store k-mer values directly
+        let crate::MinimizerVec::U128(vec) = minimizers;
+        vec.extend(m.pos_and_values_u128().map(|(_pos, val)| val));
 
         seq
     }
 
     fn should_keep_pair(&mut self, seq1: &[u8], seq2: &[u8]) -> (bool, usize, usize, Vec<String>) {
         // Process both sequences and count distinct hits
-        let (hit_count, num_minimizers, hit_kmers) = match self.minimizers {
-            MinimizerSet::U64(set) => {
-                let mut seen_hits = crate::RapidHashSet::default();
-                let mut hit_kmers = Vec::new();
-                let mut num_minimizers = 0;
+        let MinimizerSet::U128(set) = self.minimizers;
+        let mut seen_hits = crate::RapidHashSet::default();
+        let mut hit_kmers = Vec::new();
+        let mut num_minimizers = 0;
 
-                for seq in [seq1, seq2] {
-                    self.get_minimizer_positions_and_values(seq);
-                    if let crate::MinimizerVec::U64(vec) = &self.buffers.minimizers {
-                        num_minimizers += vec.len();
-                        for &minimizer in vec {
-                            if set.contains(&minimizer) && seen_hits.insert(minimizer) {
-                                if self.debug {
-                                    let kmer = decode_u64(minimizer, self.kmer_length);
-                                    hit_kmers.push(String::from_utf8_lossy(&kmer).to_string());
-                                }
-                            }
-                        }
+        for seq in [seq1, seq2] {
+            self.get_minimizer_positions_and_values(seq);
+            let crate::MinimizerVec::U128(vec) = &self.buffers.minimizers;
+            num_minimizers += vec.len();
+            for &minimizer in vec {
+                if set.contains(&minimizer) && seen_hits.insert(minimizer) {
+                    if self.debug {
+                        let kmer = decode(minimizer, self.kmer_length);
+                        hit_kmers.push(String::from_utf8_lossy(&kmer).to_string());
                     }
                 }
-                (seen_hits.len(), num_minimizers, hit_kmers)
             }
-            MinimizerSet::U128(set) => {
-                let mut seen_hits = crate::RapidHashSet::default();
-                let mut hit_kmers = Vec::new();
-                let mut num_minimizers = 0;
-
-                for seq in [seq1, seq2] {
-                    self.get_minimizer_positions_and_values(seq);
-                    if let crate::MinimizerVec::U128(vec) = &self.buffers.minimizers {
-                        num_minimizers += vec.len();
-                        for &minimizer in vec {
-                            if set.contains(&minimizer) && seen_hits.insert(minimizer) {
-                                if self.debug {
-                                    let kmer = decode_u128(minimizer, self.kmer_length);
-                                    hit_kmers.push(String::from_utf8_lossy(&kmer).to_string());
-                                }
-                            }
-                        }
-                    }
-                }
-                (seen_hits.len(), num_minimizers, hit_kmers)
-            }
-        };
+        }
+        let hit_count = seen_hits.len();
 
         (
             self.meets_filtering_criteria(hit_count, num_minimizers),
