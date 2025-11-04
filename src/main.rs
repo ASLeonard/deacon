@@ -28,54 +28,48 @@ enum Commands {
     },
     /// Retain or deplete sequence records with sufficient minimizer hits to an indexed query
     Filter {
-        /// Path to minimizer index file
-        index: PathBuf,
+        /// Path to first minimizer index file (haplotype 1)
+        #[arg(long = "index1", required = true)]
+        index1: PathBuf,
 
-        /// Optional path to fastx file (or - for stdin)
-        #[arg(default_value = "-")]
+        /// Path to second minimizer index file (haplotype 2)
+        #[arg(long = "index2", required = true)]
+        index2: PathBuf,
+
+        /// Path to input fastx file (long reads only, or - for stdin)
+        #[arg(short = 'i', long = "input", default_value = "-")]
         input: String,
 
-        /// Optional path to second paired fastx file (or - for interleaved stdin)
-        input2: Option<String>,
+        /// Path to output file for ambiguous reads (haplotype 0) - optional
+        #[arg(long = "hap0")]
+        hap0: Option<PathBuf>,
 
-        /// Path to output fastx file (stdout if not specified; detects .gz and .zst)
-        #[arg(short = 'o', long = "output")]
-        output: Option<PathBuf>,
+        /// Path to output file for haplotype 1 reads
+        #[arg(long = "hap1", required = true)]
+        hap1: PathBuf,
 
-        /// Optional path to second paired output fastx file (detects .gz and .zst)
-        #[arg(short = 'O', long = "output2")]
-        output2: Option<String>,
+        /// Path to output file for haplotype 2 reads
+        #[arg(long = "hap2", required = true)]
+        hap2: PathBuf,
 
-        /// Minimum absolute number of minimizer hits for a match
-        #[arg(short = 'a', long = "abs-threshold", default_value_t = 2, value_parser = clap::value_parser!(u16).range(1..))]
-        abs_threshold: u16,
-
-        /// Minimum relative proportion (0.0-1.0) of minimizer hits for a match
-        #[arg(short = 'r', long = "rel-threshold", default_value_t = 0.01)]
-        rel_threshold: f64,
+        /// Minimum ratio threshold for haplotype assignment (hits1/hits2 >= min_ratio for hap1)
+        #[arg(long = "min-ratio", default_value_t = 2.0)]
+        min_ratio: f64,
 
         /// Search only the first N nucleotides per sequence (0 = entire sequence)
         #[arg(short = 'p', long = "prefix-length", default_value_t = 0)]
         prefix_length: usize,
 
-        /// Discard matching sequences (invert filtering behaviour)
-        #[arg(short = 'd', long = "deplete", default_value_t = false)]
-        deplete: bool,
-
         /// Replace sequence headers with incrementing numbers
         #[arg(short = 'R', long = "rename", default_value_t = false)]
         rename: bool,
-
-        /// Path to JSON summary output file
-        #[arg(short = 's', long = "summary")]
-        summary: Option<PathBuf>,
 
         /// Number of execution threads (0 = auto)
         #[arg(short = 't', long = "threads", default_value_t = 8)]
         threads: usize,
 
-        /// Output compression level (1-9 for gz & xz; 1-22 for zstd)
-        #[arg(long = "compression-level", default_value_t = 2)]
+        /// Output compression level (1-9 for gz; 1-22 for zstd)
+        #[arg(long = "compression-level", default_value_t = 3)]
         compression_level: u8,
 
         /// Output sequences with minimizer hits to stderr
@@ -400,40 +394,29 @@ fn process_command(command: &Commands) -> Result<(), anyhow::Error> {
             }
         },
         Commands::Filter {
-            index: minimizers,
+            index1,
+            index2,
             input,
-            input2,
-            output,
-            output2,
-            abs_threshold,
-            rel_threshold,
+            hap0,
+            hap1,
+            hap2,
+            min_ratio,
             prefix_length,
-            summary,
-            deplete,
             rename,
             threads,
             compression_level,
             debug,
             quiet,
         } => {
-            // Validate output2 usage
-            if output2.is_some() && input2.is_none() {
-                eprintln!(
-                    "Warning: --output2 specified but no second input file provided. --output2 will be ignored."
-                );
-            }
-
             let config = FilterConfig {
-                minimizers_path: minimizers,
+                index1_path: index1,
+                index2_path: index2,
                 input_path: input,
-                input2_path: input2.as_deref(),
-                output_path: output.as_ref().map(|p| p.as_path()),
-                output2_path: output2.as_deref(),
-                abs_threshold: *abs_threshold as usize,
-                rel_threshold: *rel_threshold,
+                hap0_path: hap0.as_deref(),
+                hap1_path: hap1,
+                hap2_path: hap2,
+                min_ratio_threshold: *min_ratio,
                 prefix_length: *prefix_length,
-                summary_path: summary.as_ref(),
-                deplete: *deplete,
                 rename: *rename,
                 threads: *threads,
                 compression_level: *compression_level,

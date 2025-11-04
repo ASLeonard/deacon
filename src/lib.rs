@@ -219,35 +219,29 @@ impl Default for MinimizerFrequencies {
 }
 
 pub struct FilterConfig<'a> {
-    /// Minimizer index file path
-    pub minimizers_path: &'a Path,
+    /// First minimizer index file path (required)
+    pub index1_path: &'a Path,
 
-    /// Path to input fastx file (or - for stdin)
+    /// Second minimizer index file path (required for dual-index binning)
+    pub index2_path: &'a Path,
+
+    /// Path to input fastx file (long reads only)
     pub input_path: &'a str,
 
-    /// Path to optional second paired fastx file (or - for interleaved stdin)
-    pub input2_path: Option<&'a str>,
+    /// Path to output file for ambiguous reads (haplotype 0) - optional
+    pub hap0_path: Option<&'a Path>,
 
-    /// Path to output fastx file (None for stdout; detects .gz and .zst)
-    pub output_path: Option<&'a Path>,
+    /// Path to output file for haplotype 1 reads (required)
+    pub hap1_path: &'a Path,
 
-    /// Path to optional second output fastx file for paired reads (detects .gz and .zst)
-    pub output2_path: Option<&'a str>,
+    /// Path to output file for haplotype 2 reads (required)
+    pub hap2_path: &'a Path,
 
-    /// Absolute threshold for filtering sequences
-    pub abs_threshold: usize,
-
-    /// Relative threshold for filtering sequences (0.0-1.0)
-    pub rel_threshold: f64,
+    /// Minimum ratio threshold (hits1/hits2 must be >= this for hap1, <= 1/this for hap2)
+    pub min_ratio_threshold: f64,
 
     /// Consider only the first N nucleotides per sequence (0 = entire sequence)
     pub prefix_length: usize,
-
-    /// Path to JSON summary file
-    pub summary_path: Option<&'a PathBuf>,
-
-    /// Deplete mode (remove sequences WITH matches, original deacon behavior)
-    pub deplete: bool,
 
     /// Replace sequence headers with sequential numbers (1, 2, 3...)
     pub rename: bool,
@@ -266,21 +260,20 @@ pub struct FilterConfig<'a> {
 }
 
 impl<'a> FilterConfig<'a> {
-    pub fn new(minimizers_path: &'a Path) -> Self {
+    /// Create a new FilterConfig for dual-index competitive binning
+    pub fn new(index1_path: &'a Path, index2_path: &'a Path, hap1_path: &'a Path, hap2_path: &'a Path) -> Self {
         Self {
-            minimizers_path,
+            index1_path,
+            index2_path,
             input_path: "-",
-            input2_path: None,
-            output_path: None,
-            output2_path: None,
-            abs_threshold: 2,
-            rel_threshold: 0.01,
+            hap0_path: None,
+            hap1_path,
+            hap2_path,
+            min_ratio_threshold: 2.0,
             prefix_length: 0,
-            summary_path: None,
-            deplete: false,
             rename: false,
-            threads: 0,           // Use all available threads by default
-            compression_level: 2, // Default compression level
+            threads: 0,
+            compression_level: 3,
             debug: false,
             quiet: false,
         }
@@ -291,43 +284,18 @@ impl<'a> FilterConfig<'a> {
         self
     }
 
-    pub fn with_input2(mut self, input2_path: &'a str) -> Self {
-        self.input2_path = Some(input2_path);
+    pub fn with_hap0(mut self, hap0_path: &'a Path) -> Self {
+        self.hap0_path = Some(hap0_path);
         self
     }
 
-    pub fn with_output(mut self, output_path: &'a Path) -> Self {
-        self.output_path = Some(output_path);
-        self
-    }
-
-    pub fn with_output2(mut self, output2_path: &'a str) -> Self {
-        self.output2_path = Some(output2_path);
-        self
-    }
-
-    pub fn with_abs_threshold(mut self, abs_threshold: usize) -> Self {
-        self.abs_threshold = abs_threshold;
-        self
-    }
-
-    pub fn with_rel_threshold(mut self, rel_threshold: f64) -> Self {
-        self.rel_threshold = rel_threshold;
+    pub fn with_min_ratio_threshold(mut self, min_ratio_threshold: f64) -> Self {
+        self.min_ratio_threshold = min_ratio_threshold;
         self
     }
 
     pub fn with_prefix_length(mut self, prefix_length: usize) -> Self {
         self.prefix_length = prefix_length;
-        self
-    }
-
-    pub fn with_summary(mut self, summary_path: &'a PathBuf) -> Self {
-        self.summary_path = Some(summary_path);
-        self
-    }
-
-    pub fn with_deplete(mut self, deplete: bool) -> Self {
-        self.deplete = deplete;
         self
     }
 
