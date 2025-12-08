@@ -308,6 +308,16 @@ deacon --use-server filter ref.idx reads.fq -o filt.fq -s summary.json
 deacon --use-server server stop
 ```
 
+## Workflow manager integration
+
+### Nextflow (nf-core)
+
+- Modules [`deacon_index`](https://nf-co.re/modules/deacon_index) and [`deacon_filter`](https://nf-co.re/modules/deacon_filter)
+- Subworkflow [`fastq_index_filter_deacon`](https://nf-co.re/subworkflows/fastq_index_filter_deacon/)
+
+### Galaxy
+Work in progress: https://github.com/galaxyproject/tools-iuc/pull/7473
+
 ## Citation
 
 [![biorXiv preprint](https://img.shields.io/badge/biorXiv-10.1101/2025.06.09.658732-red?&style=flat-square)](https://doi.org/10.1101/2025.06.09.658732)
