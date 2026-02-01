@@ -41,7 +41,7 @@ RUSTFLAGS="-C target-cpu=native" cargo install deacon
 Containers are available from the [BioContainers registry](https://biocontainers.pro/tools/deacon).
 
 ```bash
-docker pull quay.io/biocontainers/deacon:0.12.0--h4349ce8_0
+docker pull quay.io/biocontainers/deacon:0.13.2--h7ef3eeb_0
 ```
 
 ## Quickstart
@@ -56,7 +56,7 @@ deacon index fetch panhuman-1
 deacon filter -d panhuman-1.k31w15.idx reads.fq -o filt.fq
 
 # Deplete short paired reads
-deacon filter -d panhuman-1.k31w15.idx reads.r1.fq.gz reads.r2.fq.gz -o filt.r1.fq.gz -o filt.r2.fq.gz
+deacon filter -d panhuman-1.k31w15.idx reads.r1.fq.gz reads.r2.fq.gz -o filt.r1.fq.gz -O filt.r2.fq.gz
 ```
 
 ### Ultrafast gene/genome/pangenome search
@@ -91,6 +91,8 @@ Prebuilt pangenome indexes are provided for human and mouse host classification 
 
 The main command `deacon filter` accepts an index path followed by up to two FASTA/FASTQ file paths, depending on whether input sequences originate from stdin, a single file, or paired input files. Indexes are built with `deacon index build`.  Paired queries are supported as either separate files or interleaved stdin, and written interleaved to either stdout or file, or else to separate paired output files. For paired reads, distinct minimizer hits originating from either mate are counted. By default, input sequences must meet both an absolute threshold of 2 minimizer hits (`-a 2`) and a relative threshold of 1% of minimizers (`-r 0.01`) to pass the filter. Filtering can be inverted for e.g. host depletion using the `--deplete` (`-d`) flag. Gzip, Zstandard, and xz compression formats are detected automatically by file extension.
 
+#### Examples
+
 ```bash
 # Keep only sequences matching a collection of genes
 deacon index build genes.fa > genes.idx
@@ -107,6 +109,9 @@ deacon filter -d -r 0.1 panhuman-1.k31w15.idx reads.fq.gz > filt.fq.gz
 
 # Stdin and stdout
 zcat reads.fq.gz | deacon filter -d panhuman-1.k31w15.idx > filt.fq
+
+# True multithreaded gzip decompression with rapidgzip
+rapidgzip -dc reads.fq.gz | deacon filter -d panhuman-1.k31w15.idx > filt.fq
 
 # Zstandard compression
 deacon filter -d panhuman-1.k31w15.idx reads.fq.zst -o filt.fq.zst
@@ -131,7 +136,7 @@ deacon filter -d --debug panhuman-1.k31w15.idx reads.fq.gz > filt.fq
 
 > [!NOTE]
 >
-> `deacon filter` uses 8 threads by default. Using more threads (e.g.  `--threads 16`) can accelerate filtering given sufficient resources, especially with uncompressed sequences whose processing is not rate limited by decompression. Since version `0.13.0`, Deacon writes gzipped output files (e.g `-o out.fastq.gz`) in parallel, providing particular practical benefit for gzipped paired reads. If output file(s) ending in `.gz` are detected, total `--threads` are allocated 1:1 to compression and filtering tasks respectively. Compression thread allocation can be overriden with `--compression-threads`. For best performance, avoid gzip compression where possible and consider using Zstandard (.zst), which has native support in Deacon.
+> `deacon filter` uses 8 threads by default. Using more threads (e.g.  `--threads 16`) can accelerate filtering given sufficient resources, especially with uncompressed sequences whose processing is not rate limited by decompression. Since version `0.13.0`, Deacon writes gzipped output files (e.g `-o out.fastq.gz`) in parallel, providing particular practical benefit for gzipped paired reads. If output file(s) ending in `.gz` are detected, total `--threads` are allocated 1:1 to compression and filtering tasks respectively. Gzip compression thread allocation can be overriden with `--compression-threads`.
 
 ### Indexing
 
