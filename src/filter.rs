@@ -31,8 +31,20 @@ struct FilterProcessorConfig {
     debug: bool,
 }
 
+/// Check if path is a special input (process substitution, named pipe, or /dev/fd/*)
+fn is_special_input_path(path: &str) -> bool {
+    use std::os::unix::fs::FileTypeExt;
+    path.starts_with("/dev/fd/")
+        || path.starts_with("/proc/self/fd/")
+        || std::path::Path::new(path)
+            .metadata()
+            .map(|m| m.file_type().is_fifo())
+            .unwrap_or(false)
+}
+
 /// Check input file path(s) exist
 fn check_input_paths(config: &FilterConfig) -> Result<()> {
+    // Index must be a real file
     if !config.minimizers_path.exists() {
         return Err(anyhow::anyhow!(
             "Index file does not exist: {}",
@@ -40,8 +52,11 @@ fn check_input_paths(config: &FilterConfig) -> Result<()> {
         ));
     }
 
-    // Skip stdin case
-    if config.input_path != "-" && !std::path::Path::new(config.input_path).exists() {
+    // Skip stdin and special paths (process substitution, FIFOs)
+    if config.input_path != "-"
+        && !is_special_input_path(config.input_path)
+        && !std::path::Path::new(config.input_path).exists()
+    {
         return Err(anyhow::anyhow!(
             "Input file does not exist: {}",
             config.input_path
@@ -49,7 +64,10 @@ fn check_input_paths(config: &FilterConfig) -> Result<()> {
     }
 
     if let Some(input2_path) = config.input2_path {
-        if input2_path != "-" && !std::path::Path::new(input2_path).exists() {
+        if input2_path != "-"
+            && !is_special_input_path(input2_path)
+            && !std::path::Path::new(input2_path).exists()
+        {
             return Err(anyhow::anyhow!(
                 "Second input file does not exist: {}",
                 input2_path
@@ -62,8 +80,8 @@ fn check_input_paths(config: &FilterConfig) -> Result<()> {
 
 /// Check if file metadata len < 5 (catches empty uncompressed files only)
 fn is_empty_file(path: &str) -> Result<bool> {
-    if path == "-" {
-        return Ok(false); // Can't check stdin
+    if path == "-" || is_special_input_path(path) {
+        return Ok(false); // Can't check stdin or FIFOs/process substitution
     }
     let metadata = std::fs::metadata(path)
         .map_err(|e| anyhow::anyhow!("Failed to read file metadata {}: {}", path, e))?;

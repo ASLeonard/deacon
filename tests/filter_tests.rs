@@ -3,6 +3,7 @@ use assert_cmd::cargo;
 use predicates::prelude::*;
 use std::fs;
 use std::fs::File;
+use std::io::Write;
 use std::path::Path;
 use std::process::Command as StdCommand;
 use tempfile::tempdir;
@@ -1943,4 +1944,64 @@ fn test_thread_allocation_no_compression() {
         .success()
         .stderr(predicates::str::contains("threads=8"))
         .stderr(predicates::str::contains("threads=8(").not());
+}
+
+#[test]
+#[cfg(unix)]
+fn test_filter_with_named_pipe() {
+    use nix::sys::stat::Mode;
+    use nix::unistd::mkfifo;
+
+    let temp_dir = tempdir().unwrap();
+    let fasta_path = temp_dir.path().join("ref.fasta");
+    let bin_path = temp_dir.path().join("ref.bin");
+    let fifo_path = temp_dir.path().join("input.fifo");
+    let output_path = temp_dir.path().join("filtered.fastq");
+
+    // Create reference and build index
+    create_test_fasta(&fasta_path);
+    build_index(&fasta_path, &bin_path);
+
+    // Create a named pipe (FIFO)
+    mkfifo(&fifo_path, Mode::S_IRWXU).expect("Failed to create FIFO");
+
+    // Spawn thread to write test data to FIFO (must happen concurrently with read)
+    let fifo_path_clone = fifo_path.clone();
+    let writer_thread = std::thread::spawn(move || {
+        let mut file = File::create(&fifo_path_clone).expect("Failed to open FIFO for writing");
+        // Write FASTQ data that matches the reference
+        let fastq_data = "@seq1\nACGTGCATAGCTGCATGCATGCATGCATGCATGCATGCAATGCAACGTGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCA\n+\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n";
+        file.write_all(fastq_data.as_bytes())
+            .expect("Failed to write to FIFO");
+    });
+
+    // Run filter with FIFO as input
+    let output = StdCommand::new(cargo::cargo_bin!("deacon"))
+        .arg("filter")
+        .arg("-a")
+        .arg("1")
+        .arg("-r")
+        .arg("0.0")
+        .arg(&bin_path)
+        .arg(&fifo_path)
+        .arg("--output")
+        .arg(&output_path)
+        .output()
+        .expect("Failed to execute command");
+
+    writer_thread.join().expect("Writer thread panicked");
+
+    assert!(
+        output.status.success(),
+        "Filter command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output_path.exists(), "Output file wasn't created");
+
+    // Verify output contains the filtered sequence
+    let output_content = fs::read_to_string(&output_path).unwrap();
+    assert!(
+        output_content.contains("@seq1"),
+        "Output should contain the sequence"
+    );
 }
