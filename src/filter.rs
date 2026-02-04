@@ -31,7 +31,7 @@ struct FilterProcessorConfig {
     debug: bool,
 }
 
-/// Check if path is a special input (process substitution, named pipe, or /dev/fd/*)
+/// Check if path is a named pipe or process substitution / /dev/fd/*
 fn is_special_input_path(path: &str) -> bool {
     use std::os::unix::fs::FileTypeExt;
     path.starts_with("/dev/fd/")
@@ -44,7 +44,6 @@ fn is_special_input_path(path: &str) -> bool {
 
 /// Check input file path(s) exist
 fn check_input_paths(config: &FilterConfig) -> Result<()> {
-    // Index must be a real file
     if !config.minimizers_path.exists() {
         return Err(anyhow::anyhow!(
             "Index file does not exist: {}",
@@ -52,7 +51,6 @@ fn check_input_paths(config: &FilterConfig) -> Result<()> {
         ));
     }
 
-    // Skip stdin and special paths (process substitution, FIFOs)
     if config.input_path != "-"
         && !is_special_input_path(config.input_path)
         && !std::path::Path::new(config.input_path).exists()
@@ -81,7 +79,7 @@ fn check_input_paths(config: &FilterConfig) -> Result<()> {
 /// Check if file metadata len < 5 (catches empty uncompressed files only)
 fn is_empty_file(path: &str) -> Result<bool> {
     if path == "-" || is_special_input_path(path) {
-        return Ok(false); // Can't check stdin or FIFOs/process substitution
+        return Ok(false);
     }
     let metadata = std::fs::metadata(path)
         .map_err(|e| anyhow::anyhow!("Failed to read file metadata {}: {}", path, e))?;
